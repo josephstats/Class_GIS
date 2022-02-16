@@ -1,0 +1,361 @@
+---
+title: "Assignment4"
+author: "Joseph Jaiyeola"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+   html_document:
+   toc: yes
+   toc_float: yes
+always_allow_html: yes
+download_code: yes
+---
+
+```{r}
+library(tidycensus)
+library(tidyverse)
+library(sf)
+library(tmap)
+
+```
+
+
+# 1 Find the ACS variable for the Percent Vacant housing units for 2011 and 2019 for Harris County, TX
+
+```{r}
+v11_Profile <- load_variables(2011,
+                              "acs5/profile",
+                              cache = TRUE) #demographic profile tables
+v19_Profile <- load_variables(2019,
+                              "acs5/profile",
+                              cache = TRUE) #demographic 
+
+#Search for variables by using grep()
+
+v11_Profile[grep(x = v11_Profile$label,
+                 "Vacant housing units",
+                 ignore.case = TRUE), 
+            c("name", "label")]
+
+v19_Profile[grep(x = v19_Profile$label,
+                 "Vacant housing units",
+                 ignore.case = TRUE),
+            c("name", "label")]
+```
+
+
+## Extract from ACS summary file data profile variables from 2011 and 2019 for Harris County, TX Census Tracts
+
+The data profile tables are very useful because they contain lots of pre-calculated variables.
+
+For 2011
+
+```{r results='hide'}
+house11<-get_acs(geography = "tract",
+                state="TX",
+                county = "Harris County",
+                year = 2011,
+                variables="DP04_0003P" ,
+                geometry = T,
+                output = "wide")
+
+
+#rename variables and filter missing cases
+house11<- house11%>%
+  mutate( house = DP04_0003PE,
+         house_er = DP04_0003PM/1.645,
+         house_cv =100* (house_er/house)) %>%
+  filter(complete.cases(house), is.finite(house_cv)==T)%>%
+  select(GEOID, house, house_er,house_cv)
+
+head(house11)
+
+```
+
+
+
+# 2 Create a map using quantile breaks of this variable for each year
+
+## Breaking the continuous variable into discrete bins with quantile breaks
+
+
+```{r}
+
+
+tm_shape(house11)+
+  tm_polygons(c("house"),
+              title=c("% in Vacant housing units"),
+              palette="Blues",
+              style="quantile",
+              n=5)+
+  #tm_format("World", legend.outside=T, title.size =4)+
+  tm_scale_bar()+
+  tm_layout(title="Harris County Vacant housing Rate Estimates in 2011- Quantile Breaks",
+            title.size =1.5,
+            legend.frame = TRUE,
+            title.position = c('right', 'top'))+
+  tm_compass()+
+  tm_format("World",
+            legend.position =  c("left", "bottom"),
+            main.title.position =c("center"))
+
+```
+
+
+
+
+
+
+```{r}
+
+
+p1<-tm_shape(house11)+
+  tm_polygons(c("house"),
+              title=c("% in Vacant Housing"),
+              palette="Blues",
+              style="quantile",
+              n=5)+
+  #tm_format("World", legend.outside=T, title.size =4)+
+  tm_scale_bar()+
+  tm_layout(title="Harris County Vacant Housing Rate Estimates",
+            title.size =1.5, 
+            legend.frame = TRUE,
+            title.position = c('right', 'top'))+
+  tm_compass()+
+  tm_format("World",
+            legend.position =  c("left", "bottom"),
+            main.title.position =c("center"))
+
+
+p2<-tm_shape(house11)+
+  tm_polygons(c("house_cv"),
+              title=c("CV Vacant Housing"),
+              palette="Blues",
+              style="quantile",
+              n=5)+
+  #tm_format("World", title="Harris County Vacant Housing Rate CV", legend.outside=T)+
+  tm_layout(title="Harris County Vacant Housing Rate CV",
+            title.size =1.5,
+            legend.frame = TRUE,
+            title.position = c('right', 'top'))+
+  tm_scale_bar()+
+  tm_compass()+
+  tm_format("World",
+            legend.position =  c("left", "bottom"),
+            main.title.position =c("center"))
+
+
+
+tmap_arrange(p1, p2)
+
+```
+
+```{r}
+plot(house11$house, house11$house_cv, main = "Error in Estimates vs Estimate Size")
+```
+
+# Compare Vacant Housing rates over time
+
+
+```{r, results='hide'}
+house19<-get_acs(geography = "tract",
+                state="TX",
+                county = "Harris County",
+                year = 2019,
+                variables="DP04_0003P" ,
+                geometry = T,
+                output = "wide")
+
+
+#rename variables and filter missing cases
+house19<- house19%>%
+  mutate( house = DP04_0003PE,
+         house_er = DP04_0003PM/1.645,
+         house_cv =100* (house_er/house)) %>%
+  filter(complete.cases(house), is.finite(house_cv)==T)%>%
+  select(GEOID, house, house_er,house_cv)
+
+head(house19)
+
+```
+
+
+```{r}
+
+
+tm_shape(house19)+
+  tm_polygons(c("house"),
+              title=c("% in Vacant housing units"),
+              palette="Blues",
+              style="quantile",
+              n=5)+
+  #tm_format("World", legend.outside=T, title.size =4)+
+  tm_scale_bar()+
+  tm_layout(title="Harris County Vacant housing Rate Estimates in 2019- Quantile Breaks",
+            title.size =1.5,
+            legend.frame = TRUE,
+            title.position = c('right', 'top'))+
+  tm_compass()+
+  tm_format("World",
+            legend.position =  c("left", "bottom"),
+            main.title.position =c("center"))
+
+```
+
+
+# 3 Calculate the differences between the two years, including the test for significance of the differnces
+
+```{r}
+
+#merge the two years worth of data
+st_geometry(house19)<-NULL #strip the geometry from the 2019 data
+
+mdat<-left_join(house11, house19, by=c("GEOID"="GEOID"))
+
+head(mdat)
+```
+
+
+```{r}
+acstest<-function(names,geoid, est1, err1, est2, err2, alpha, yr1, yr2, span){
+  
+  se1<-err1/qnorm(.90)
+  se2<-err2/qnorm(.90)
+  yrs1<-seq(yr1, to=yr1-span)
+  yrs2<-seq(yr2, to=yr2-span)
+
+  C<-mean(yrs2%in%yrs1)
+  diff<- (est1-est2)
+  test<-(est1-est2) / (sqrt(1-C)*sqrt(se1^2+se2^2))
+  crit<-qnorm(1-alpha/2)
+  pval<-1-pnorm(abs(test))
+  result<-NULL
+  result[pval > alpha]<-"insignificant change"
+  result[pval < alpha & test < 0]<- "significant increase"
+  result[pval < alpha & test > 0]<-"significant decrease" 
+  
+  data.frame(name=names,geoid=geoid, est1=est1, est2=est2, se1=se1, se2=se2,difference=diff, test=test, result=result, pval=pval)
+}
+```
+
+
+```{r}
+significance(est1=mdat$house.x,
+             est2=mdat$house.y,
+             moe1=mdat$house_er.x,
+             moe2 = mdat$house_er.y,
+             clevel = .9)
+```
+
+```{r}
+mdat$signif<- significance(est1=mdat$house.x,
+                           est2=mdat$house.y,
+                           moe1=mdat$house_er.x,
+                           moe2 = mdat$house_er.y,
+                           clevel = .9)
+```
+
+
+```{r}
+
+  diff1119<-acstest(names = mdat$GEOID,
+                    geoid = mdat$GEOID,
+                    est1 = mdat$house.x,
+                    est2 = mdat$house.y,
+                    err1 = mdat$house_er.x,
+                    err2=mdat$house_er.y,
+                    alpha = .1,
+                    yr1 = 2011, yr2=2019,
+                    span = 5)
+
+head(diff1119)
+table(diff1119$result)
+```
+
+Compare to tidycensus
+
+```{r}
+table(mdat$signif) #
+
+```
+
+
+
+# 4 Create a map showing the differences by census tract
+## Make a map layout
+
+```{r, fig.height=10, fig.width=12}
+acs_merge<-left_join(mdat, diff1119, by=c("GEOID"="geoid"))
+
+tmap_mode("plot")
+p1<-tm_shape(acs_merge)+
+  tm_polygons(c("house.x"),
+              title=c("% in Vacant Housing in  2011"),
+              palette="Blues",
+              style="quantile",
+              n=5)+
+  #tm_format("World", legend.outside=T, title.size =4)+
+  tm_scale_bar()+
+  tm_layout(title="Harris County Vacant Housing Rate Estimates 2011",
+            title.size =1.5,
+            legend.frame = TRUE,
+            title.position = c('right', 'top'))+
+  tm_compass()+
+  tm_format("World",
+            legend.position =  c("left", "bottom"),
+            main.title.position =c("center"))
+
+p2<-tm_shape(acs_merge)+
+  tm_polygons(c("house.y"),
+              title=c("% in Harris County Vacant Housing Rate Estimates in 2019"),
+              palette="Blues", 
+              style="quantile",
+              n=5)+
+  #tm_format("World", title="Harris County Vacant Housing Rate CV", legend.outside=T)+
+  tm_layout(title="Harris County Vacant Housing Rate Estimate 2019",
+            title.size =1.5,
+            legend.frame = TRUE,
+            title.position = c('right', 'top'))+
+  tm_scale_bar()+
+  tm_compass()+
+  tm_format("World",
+            legend.position =  c("left", "bottom"),
+            main.title.position =c("center"))
+
+
+p3  <- tm_shape(acs_merge)+
+  tm_polygons(c("result"),
+              title=c("Changes"),
+              palette = "Set2")+
+  #tm_format("World", title="Harris County Vacant Housing Rate CV", legend.outside=T)+
+  tm_layout(title="Harris County Vacant Housing Rate Estimate Changes",
+            title.size =1.5, 
+            legend.frame = TRUE,
+            title.position = c('right', 'top'))+
+  tm_scale_bar()+
+  tm_compass()
+  
+
+tmap_arrange(p1, p2,  p3, nrow=2)
+
+```
+
+
+## Make an interactive map
+```{r}
+tmap_mode("view")
+#osmtile <- tmaptools::read_osm(house11, mergeTiles = T)
+
+#tm_shape(osmtile)+
+ # tm_rgb()+
+tm_shape(acs_merge)+
+  tm_polygons("result",
+              alpha = .7,
+              title=c("Changes"),
+              palette = "Set2")+
+  #tm_format("World", title="Harris County Vacant Housing Rate  CV", legend.outside=T)+
+  tm_layout(title="Harris County Vacant Housing Rate Estimate Changes",
+            title.size =1.5)+
+  tm_scale_bar()
+  #tm_compass()+
+  
+```
